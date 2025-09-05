@@ -32,8 +32,8 @@ class AgentState(TypedDict):
 # Please replace them with your own valid keys.
 
 # *** IMPORTANT: Replace the placeholder values below with your actual API keys. ***
-os.environ["GOOGLE_API_KEY"] = "AIzaSyCIRxUg7FQGnk-nP4uot25gTjJS_-evYqQ"
-os.environ["GOOGLE_CSE_ID"] = "90bfeab8e25b24cc0"
+os.environ["GOOGLE_API_KEY"] = "Your_key"
+os.environ["GOOGLE_CSE_ID"] = "Your CSE ID"
 
 api_key = os.getenv("GOOGLE_API_KEY")
 cse_id = os.getenv("GOOGLE_CSE_ID")
@@ -213,3 +213,4 @@ def analyze():
 # This is the standard entry point for Flask apps on Cloud Run.
 if __name__ == '__main__':
     app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
