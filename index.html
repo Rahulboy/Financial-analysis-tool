@@ -1,0 +1,121 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Live Financial Report Generator</title>
+    <!-- Tailwind CSS CDN for styling -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f3f4f6;
+        }
+    </style>
+</head>
+<body class="flex items-center justify-center min-h-screen p-4">
+
+    <!-- Main Container -->
+    <div class="bg-white p-8 rounded-2xl shadow-2xl w-full max-w-4xl">
+        <div class="text-center mb-8">
+            <h1 class="text-3xl sm:text-4xl font-bold text-gray-800 mb-2">
+                Live Financial Report Generator
+            </h1>
+            <p class="text-gray-500">
+                A multi-agent system powered by Generative AI.
+            </p>
+        </div>
+
+        <!-- Input Section -->
+        <div class="flex flex-col sm:flex-row gap-4 mb-8">
+            <input
+                id="tickerInput"
+                type="text"
+                placeholder="Enter a stock ticker (e.g., GOOGL, AAPL, MSFT)"
+                class="flex-grow p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            />
+            <button
+                id="generateButton"
+                class="bg-blue-600 text-white font-semibold py-3 px-6 rounded-lg shadow-md hover:bg-blue-700 transition duration-300"
+            >
+                Generate Report
+            </button>
+        </div>
+
+        <!-- Report Display Section -->
+        <div id="reportContainer" class="p-6 bg-gray-50 rounded-lg shadow-inner min-h-[300px] transition-all duration-500">
+            <div id="loadingMessage" class="hidden text-center text-blue-600 font-medium">
+                <div class="flex flex-col items-center justify-center">
+                    <svg class="animate-spin -ml-1 mr-3 h-8 w-8 text-blue-500" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
+                      <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+                      <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                    </svg>
+                    <span class="mt-2">Generating report... This may take a moment.</span>
+                </div>
+            </div>
+            <div id="errorMessage" class="hidden text-center text-red-600 font-medium">
+                
+            </div>
+            <div id="reportContent" class="prose max-w-none text-gray-800">
+                <h3 class="text-xl font-bold text-gray-700 mb-2">How to use this tool:</h3>
+                <p class="text-gray-600">
+                    Enter a valid stock ticker symbol in the input box and click "Generate Report" to see a comprehensive financial analysis. The report will include live data and public sentiment analysis from recent headlines.
+                </p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('generateButton').addEventListener('click', async () => {
+            const ticker = document.getElementById('tickerInput').value.trim().toUpperCase();
+            const reportContent = document.getElementById('reportContent');
+            const loadingMessage = document.getElementById('loadingMessage');
+            const errorMessage = document.getElementById('errorMessage');
+
+            if (!ticker) {
+                errorMessage.textContent = 'Please enter a ticker symbol.';
+                errorMessage.classList.remove('hidden');
+                return;
+            }
+
+            // Hide previous messages and show loading indicator
+            reportContent.innerHTML = '';
+            errorMessage.classList.add('hidden');
+            loadingMessage.classList.remove('hidden');
+
+            try {
+                // IMPORTANT: Replace this placeholder URL with your live Google Cloud Run URL
+                const serverUrl = 'YOUR_GOOGLE_CLOUD_RUN_URL_HERE';
+                
+                const response = await fetch(`${serverUrl}/analyze`, {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ ticker: ticker }),
+                });
+
+                if (!response.ok) {
+                    const errorData = await response.json();
+                    throw new Error(errorData.error || 'Failed to fetch data from the server.');
+                }
+
+                const data = await response.json();
+                
+                loadingMessage.classList.add('hidden');
+                
+                // Convert the report text to HTML and display it
+                // We use a simple function to handle newlines
+                const formattedReport = data.report.replace(/\n/g, '<br>');
+                reportContent.innerHTML = formattedReport;
+
+            } catch (error) {
+                loadingMessage.classList.add('hidden');
+                errorMessage.textContent = `Error: ${error.message}`;
+                errorMessage.classList.remove('hidden');
+                console.error('Error generating report:', error);
+            }
+        });
+    </script>
+</body>
+</html>

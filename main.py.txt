@@ -1,0 +1,215 @@
+from typing import TypedDict, Annotated, List, Union
+from langchain_core.agents import AgentAction, AgentFinish
+from langchain_core.tools import tool
+from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+from pydantic import BaseModel, Field
+from langgraph.graph import StateGraph, END, START
+from langchain_google_genai import ChatGoogleGenerativeAI
+from langchain_google_community import GoogleSearchAPIWrapper
+from langchain_core.tools import Tool
+import os
+import operator
+import json
+import yfinance as yf
+import requests
+from bs4 import BeautifulSoup
+
+from flask import Flask, request, jsonify
+from flask_cors import CORS
+
+# Define the state of our graph
+class AgentState(TypedDict):
+    input: str
+    chat_history: Annotated[List, operator.add]
+    intermediate_steps: Annotated[List[tuple[AgentAction, str]], operator.add]
+    financial_data: str
+    news_headlines: str
+    parsed_headlines: str
+    report: str
+
+# --- API key and CSE ID setup ---
+# NOTE: The keys below are for demonstration purposes and will not work.
+# Please replace them with your own valid keys.
+
+# *** IMPORTANT: Replace the placeholder values below with your actual API keys. ***
+os.environ["GOOGLE_API_KEY"] = "AIzaSyCIRxUg7FQGnk-nP4uot25gTjJS_-evYqQ"
+os.environ["GOOGLE_CSE_ID"] = "90bfeab8e25b24cc0"
+
+api_key = os.getenv("GOOGLE_API_KEY")
+cse_id = os.getenv("GOOGLE_CSE_ID")
+
+if not api_key or api_key == "YOUR_GOOGLE_API_KEY":
+    raise ValueError("GOOGLE_API_KEY environment variable not found or is a placeholder. Please set it to your actual API key.")
+if not cse_id or cse_id == "YOUR_GOOGLE_CSE_ID":
+    raise ValueError("GOOGLE_CSE_ID environment variable not found or is a placeholder. Please set it to your actual CSE ID.")
+
+print("API key loaded successfully.")
+llm = ChatGoogleGenerativeAI(model="gemini-1.5-flash-latest", google_api_key=api_key, credentials=None)
+
+# Define the live tools for the agents
+
+# 1. The original Google Search tool
+search = GoogleSearchAPIWrapper()
+google_search_tool = Tool(
+    name="google_search",
+    description="Search Google for information. Use this when you need to find recent events or general knowledge.",
+    func=search.run,
+)
+
+# 2. A tool for financial data using yfinance
+@tool
+def get_financial_data(ticker: str) -> str:
+    """
+    This tool fetches specific, structured financial metrics for a company using yfinance.
+    It takes a stock ticker symbol (e.g., "GOOGL" for Google) and returns a JSON string
+    containing a financial report.
+    
+    Args:
+        ticker: The stock ticker symbol of the company.
+        
+    Returns:
+        A JSON string of financial data.
+    """
+    try:
+        stock = yf.Ticker(ticker)
+        info = stock.info
+        metrics = {
+            "Symbol": info.get('symbol'),
+            "Company Name": info.get('longName'),
+            "Current Price": info.get('currentPrice'),
+            "Market Cap": info.get('marketCap'),
+            "P/E Ratio": info.get('trailingPE'),
+            "Industry": info.get('industry')
+        }
+        return json.dumps(metrics, indent=2)
+    except Exception as e:
+        return f"Error fetching financial data for {ticker}: {e}"
+
+# Define the agents and executors
+from langchain.agents import AgentExecutor, create_tool_calling_agent
+
+prompt_financial_researcher = ChatPromptTemplate.from_messages([
+    ("system", "You are a specialized financial researcher. Your sole purpose is to find specific, factual financial data for a company using the provided tool. Do not perform any analysis, just retrieve the raw financial information."),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ("user", "{input}"),
+])
+
+prompt_news_researcher = ChatPromptTemplate.from_messages([
+    ("system", "You are a specialized news researcher. Your sole purpose is to use the Google Search tool to find recent news headlines about a company based on the user's request. Do not perform any analysis, just retrieve the raw information."),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ("user", "{input}"),
+])
+
+prompt_headline_parser = ChatPromptTemplate.from_messages([
+    ("system", "You are a data extraction expert. Your task is to take a block of text and extract only the news headlines, presenting them as a clean, simple list. Ignore all other text like descriptions, links, or timestamps."),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ("user", "{input}"),
+])
+
+prompt_sentiment_analyst = ChatPromptTemplate.from_messages([
+    ("system", "You are a sentiment analysis expert. Your task is to analyze the provided news headlines and determine the overall sentiment (positive, negative, or neutral) for a company. Your output should be a clear, single-paragraph summary of the sentiment."),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ("user", "{input}"),
+])
+
+prompt_final_synthesizer = ChatPromptTemplate.from_messages([
+    ("system", "You are a senior financial analyst. Your job is to take all the raw data, news headlines, and sentiment analysis and synthesize them into a professional, cohesive, and easy-to-understand financial report. The report must include an executive summary, a data section, and a conclusion based on the sentiment analysis."),
+    MessagesPlaceholder(variable_name="agent_scratchpad"),
+    ("user", "{input}"),
+])
+
+# Create the agents with their assigned tools
+financial_research_agent = create_tool_calling_agent(llm, [get_financial_data], prompt_financial_researcher)
+news_research_agent = create_tool_calling_agent(llm, [google_search_tool], prompt_news_researcher)
+headline_parser_agent = create_tool_calling_agent(llm, [], prompt_headline_parser)
+sentiment_agent = create_tool_calling_agent(llm, [], prompt_sentiment_analyst)
+synthesizer_agent = create_tool_calling_agent(llm, [], prompt_final_synthesizer)
+
+# Create the agent executors
+financial_research_executor = AgentExecutor(agent=financial_research_agent, tools=[get_financial_data])
+news_research_executor = AgentExecutor(agent=news_research_agent, tools=[google_search_tool])
+headline_parser_executor = AgentExecutor(agent=headline_parser_agent, tools=[])
+sentiment_executor = AgentExecutor(agent=sentiment_agent, tools=[])
+synthesizer_executor = AgentExecutor(agent=synthesizer_agent, tools=[])
+
+# Define the graph and its nodes
+workflow = StateGraph(AgentState)
+
+# 1. Define the Nodes for the Graph
+def run_financial_research(state):
+    research_query = f"Find the latest financial data for {state['input']}"
+    result = financial_research_executor.invoke({"input": research_query})
+    return {"financial_data": result.get("output", "No financial data found.")}
+
+def run_news_research(state):
+    news_query = f"Find recent news headlines for {state['input']}"
+    result = news_research_executor.invoke({"input": news_query})
+    return {"news_headlines": result.get("output", "No news headlines found.")}
+
+def run_headline_parser(state):
+    parser_query = f"Extract all news headlines from the following raw search results:\n\n{state['news_headlines']}"
+    result = headline_parser_executor.invoke({"input": parser_query})
+    return {"parsed_headlines": result.get("output", "No headlines could be parsed.")}
+
+def run_sentiment_agent(state):
+    sentiment_query = f"Analyze the sentiment of the following news headlines:\n\n{state['parsed_headlines']}"
+    result = sentiment_executor.invoke({"input": sentiment_query})
+    return {"report": result.get("output", "No sentiment analysis available.")}
+
+def run_synthesizer_agent(state):
+    synthesizer_input = f"""
+    Raw Financial Data:
+    {state['financial_data']}
+
+    News Headlines:
+    {state['parsed_headlines']}
+
+    Sentiment Analysis:
+    {state['report']}
+    
+    User Query: {state['input']}
+    """
+    final_report = synthesizer_executor.invoke({"input": synthesizer_input})
+    return {"report": final_report.get("output", "")}
+
+# 2. Add nodes to the graph
+workflow.add_node("financial_research", run_financial_research)
+workflow.add_node("news_research", run_news_research)
+workflow.add_node("headline_parser", run_headline_parser)
+workflow.add_node("sentiment", run_sentiment_agent)
+workflow.add_node("synthesizer", run_synthesizer_agent)
+
+# 3. Define the edges (the flow)
+workflow.add_edge(START, "financial_research")
+workflow.add_edge("financial_research", "news_research")
+workflow.add_edge("news_research", "headline_parser")
+workflow.add_edge("headline_parser", "sentiment")
+workflow.add_edge("sentiment", "synthesizer")
+workflow.add_edge("synthesizer", END)
+
+# 4. Compile the graph
+app_langgraph = workflow.compile()
+
+print("Multi-agent graph successfully built!")
+
+# --- Flask Server Logic ---
+app = Flask(__name__)
+CORS(app)
+
+@app.route('/analyze', methods=['POST'])
+def analyze():
+    data = request.json
+    ticker = data.get('ticker')
+    if not ticker:
+        return jsonify({"error": "No ticker provided"}), 400
+
+    try:
+        final_state = app_langgraph.invoke({"input": ticker})
+        report = final_state.get("report", "Error generating report.")
+        return jsonify({"report": report})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+# This is the standard entry point for Flask apps on Cloud Run.
+if __name__ == '__main__':
+    app.run(debug=True, host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

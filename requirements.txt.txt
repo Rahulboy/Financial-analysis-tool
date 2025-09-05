@@ -1,0 +1,10 @@
+Flask
+Flask-Cors
+langchain-google-genai
+langchain-community
+langchain-core
+langgraph
+yfinance
+pydantic
+requests
+beautifulsoup4
